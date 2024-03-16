@@ -1,0 +1,174 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  VPCID:
+    Type: String
+    Description: VPC ID
+
+  PublicSubnet1: 
+    Type: String
+    Description: PublicSubnet1
+  
+  PublicSubnet2: 
+    Type: String
+    Description: PublicSubnet2
+
+  PrivateSubnet1:
+    Type: String
+    Description: PrivateSubnet1
+
+  PrivateSubnet2:
+    Type: String
+    Description: PrivateSubnet2
+Resources:
+  # Create Security Group
+  InstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: SecurityGroup-07
+      GroupDescription: Open HTTP (port 80) and SSH (port 22)
+      VpcId: !Ref 'VPCID'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  # Create Launch Template
+  LaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-launchTemplate4ASG'
+      LaunchTemplateData:
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+            Groups:
+              - !Ref InstanceSecurityGroup
+        ImageId: ami-02d7fd1c2af6eead0
+        InstanceType: t2.micro
+        IamInstanceProfile: 
+          Arn: !GetAtt RootInstanceProfile.Arn
+
+        UserData:
+          Fn::Base64: !Sub |
+                  #!/bin/bash
+                  sudo yum update -y 
+                  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+                  export NVM_DIR="$HOME/.nvm"
+                  [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+                  source ~/.bashrc
+                  nvm install 16
+                  nvm use 16
+                  version=$(node --version)
+                  node -e "console.log('Running Node.js ' + process.version)"
+                  
+                  cd /home/ec2-user/
+                  aws s3 cp s3://mungnxbuckets3/web-tier/ web-tier --recursive
+                  
+                  cd /home/ec2-user/web-tier
+                  npm install
+                  npm run build
+                  
+                  sudo amazon-linux-extras install nginx1 -y
+                 
+                  cd /etc/nginx
+                  sudo rm nginx.conf
+                  sudo aws s3 cp s3://mungnxbuckets3/nginx.conf .
+                  
+                  sudo service nginx restart
+                  chmod -R 755 /home/ec2-user
+                  sudo chkconfig nginx on
+        #SecurityGroupIds:
+        #  - !Ref InstanceSecurityGroup
+
+  # Create AutoScaling Group
+  AutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MaxSize: '5'
+      MinSize: '2'
+      DesiredCapacity: '2'
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      MetricsCollection:
+        - Granularity: 1Minute
+
+  # Create a Scaling Policy
+  ScalingPolicy07:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      ScalingAdjustment: '1'
+
+  # Create AutoScaling Group
+  AutoScalingGroup2:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MaxSize: '5'
+      MinSize: '2'
+      DesiredCapacity: '2'
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      MetricsCollection:
+        - Granularity: 1Minute
+
+  # Create a Scaling Policy
+  ScalingPolicy02:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      ScalingAdjustment: '1'
+
+  # Create Security Group
+  InstanceSecurityGroup2:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: SecurityGroup-08
+      GroupDescription: Open HTTP (port 80) and SSH (port 22)
+      VpcId: !Ref 'VPCID'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+  RootRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  RootInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - !Ref RootRole
